@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -18,25 +18,24 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <algorithm> // For std::count
 #include <cassert>
 
-#include <algorithm> // For std::count
 #include "movegen.h"
 #include "search.h"
 #include "thread.h"
-#include "uci.h"
 #include "syzygy/tbprobe.h"
-#include "tt.h"
 
 ThreadPool Threads; // Global object
 
 
 /// Thread constructor launches the thread and waits until it goes to sleep
-/// in idle_loop(). Note that 'searching' and 'exit' should be already set.
+/// in idle_loop(). Note that 'searching' and 'exit' should be alredy set.
 
 Thread::Thread(size_t n) : idx(n), stdThread(&Thread::idle_loop, this) {
 
   wait_for_search_finished();
+  clear(); // Zero-init histories (based on std::array)
 }
 
 
@@ -52,15 +51,6 @@ Thread::~Thread() {
   stdThread.join();
 }
 
-/// Thread::bestMoveCount(Move move) return best move counter for the given root move
-
-int Thread::best_move_count(Move move) {
-
-  auto rm = std::find(rootMoves.begin() + pvIdx,
-                      rootMoves.begin() + pvLast, move);
-
-  return rm != rootMoves.begin() + pvLast ? rm->bestMoveCount : 0;
-}
 
 /// Thread::clear() reset histories, usually before a new game
 
@@ -70,11 +60,11 @@ void Thread::clear() {
   mainHistory.fill(0);
   captureHistory.fill(0);
 
-  for (auto& to : continuationHistory)
+  for (auto& to : contHistory)
       for (auto& h : to)
-          h->fill(0);
+          h.fill(0);
 
-  continuationHistory[NO_PIECE][0]->fill(Search::CounterMovePruneThreshold - 1);
+  contHistory[NO_PIECE][0].fill(Search::CounterMovePruneThreshold - 1);
 }
 
 /// Thread::start_searching() wakes up the thread that will start the search
@@ -102,13 +92,7 @@ void Thread::wait_for_search_finished() {
 
 void Thread::idle_loop() {
 
-  // If OS already scheduled us on a different group than 0 then don't overwrite
-  // the choice, eventually we are one of many one-threaded processes running on
-  // some Windows NUMA hardware, for instance in fishtest. To make it simple,
-  // just check if running threads are below a threshold, in this case all this
-  // NUMA machinery is not needed.
-  if (Options["Threads"] > 8)
-      WinProcGroup::bindThisThread(idx);
+  WinProcGroup::bindThisThread(idx);
 
   while (true)
   {
@@ -126,42 +110,41 @@ void Thread::idle_loop() {
   }
 }
 
-/// ThreadPool::set() creates/destroys threads to match the requested number.
-/// Created and launched threads will immediately go to sleep in idle_loop.
-/// Upon resizing, threads are recreated to allow for binding if necessary.
+
+/// ThreadPool::init() creates and launches the threads that will go
+/// immediately to sleep in idle_loop. We cannot use the constructor because
+/// Threads is a static object and we need a fully initialized engine at
+/// this point due to allocation of Endgames in the Thread constructor.
+
+void ThreadPool::init(size_t requested) {
+
+  push_back(new MainThread(0));
+  set(requested);
+}
+
+
+/// ThreadPool::exit() terminates threads before the program exits. Cannot be
+/// done in the destructor because threads must be terminated before deleting
+/// any static object, so before main() returns.
+
+void ThreadPool::exit() {
+
+  main()->wait_for_search_finished();
+  set(0);
+}
+
+
+/// ThreadPool::set() creates/destroys threads to match the requested number
 
 void ThreadPool::set(size_t requested) {
 
-  if (size() > 0) { // destroy any existing thread(s)
-      main()->wait_for_search_finished();
+  while (size() < requested)
+      push_back(new Thread(size()));
 
-      while (size() > 0)
-          delete back(), pop_back();
-  }
-
-  if (requested > 0) { // create new thread(s)
-      push_back(new MainThread(0));
-
-      while (size() < requested)
-          push_back(new Thread(size()));
-      clear();
-
-      // Reallocate the hash with the new threadpool size
-      TT.resize(Options["Hash"]);
-  }
+  while (size() > requested)
+      delete back(), pop_back();
 }
 
-/// ThreadPool::clear() sets threadPool data to initial values.
-
-void ThreadPool::clear() {
-
-  for (Thread* th : *this)
-      th->clear();
-
-  main()->callsCnt = 0;
-  main()->previousScore = VALUE_INFINITE;
-  main()->previousTimeReduction = 1.0;
-}
 
 /// ThreadPool::start_thinking() wakes up main thread waiting in idle_loop() and
 /// returns immediately. Main thread will wake up other threads and start the search.
@@ -171,8 +154,8 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states,
 
   main()->wait_for_search_finished();
 
-  main()->stopOnPonderhit = stop = false;
-  main()->ponder = ponderMode;
+  stopOnPonderhit = stop = false;
+  ponder = ponderMode;
   Search::Limits = limits;
   Search::RootMoves rootMoves;
 
@@ -182,7 +165,7 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states,
           rootMoves.emplace_back(m);
 
   if (!rootMoves.empty())
-      Tablebases::rank_root_moves(pos, rootMoves);
+      Tablebases::filter_root_moves(pos, rootMoves);
 
   // After ownership transfer 'states' becomes empty, so if we stop the search
   // and call 'go' again without setting a new position states.get() == NULL.
@@ -198,9 +181,9 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states,
   // is shared by threads but is accessed in read-only mode.
   StateInfo tmp = setupStates->back();
 
-  for (Thread* th : *this)
+  for (Thread* th : Threads)
   {
-      th->shuffleExts = th->nodes = th->tbHits = th->nmpMinPly = 0;
+      th->nodes = th->tbHits = 0;
       th->rootDepth = th->completedDepth = DEPTH_ZERO;
       th->rootMoves = rootMoves;
       th->rootPos.set(pos.fen(), pos.is_chess960(), &setupStates->back(), th);

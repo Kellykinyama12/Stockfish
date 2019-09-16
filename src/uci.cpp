@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -24,12 +24,13 @@
 #include <string>
 
 #include "evaluate.h"
+#include "montecarlo.h"
 #include "movegen.h"
 #include "position.h"
 #include "search.h"
 #include "thread.h"
-#include "timeman.h"
 #include "tt.h"
+#include "timeman.h"
 #include "uci.h"
 #include "syzygy/tbprobe.h"
 
@@ -89,11 +90,11 @@ namespace {
 
     // Read option name (can contain spaces)
     while (is >> token && token != "value")
-        name += (name.empty() ? "" : " ") + token;
+        name += string(" ", name.empty() ? 0 : 1) + token;
 
     // Read option value (can contain spaces)
     while (is >> token)
-        value += (value.empty() ? "" : " ") + token;
+        value += string(" ", value.empty() ? 0 : 1) + token;
 
     if (Options.count(name))
         Options[name] = value;
@@ -152,6 +153,7 @@ namespace {
 
     for (const auto& cmd : list)
     {
+        std::cerr << cmd << std::endl;
         istringstream is(cmd);
         is >> skipws >> token;
 
@@ -164,7 +166,7 @@ namespace {
         }
         else if (token == "setoption")  setoption(is);
         else if (token == "position")   position(pos, is, states);
-        else if (token == "ucinewgame") { Search::clear(); elapsed = now(); } // Search::clear() may take some while
+        else if (token == "ucinewgame") Search::clear();
     }
 
     elapsed = now() - elapsed + 1; // Ensure positivity to avoid a 'divide by zero'
@@ -207,16 +209,18 @@ void UCI::loop(int argc, char* argv[]) {
       token.clear(); // Avoid a stale if getline() returns empty or blank line
       is >> skipws >> token;
 
-      if (    token == "quit"
-          ||  token == "stop")
-          Threads.stop = true;
-
       // The GUI sends 'ponderhit' to tell us the user has played the expected move.
       // So 'ponderhit' will be sent if we were told to ponder on the same move the
       // user has played. We should continue searching but switch from pondering to
-      // normal search.
+      // normal search. In case Threads.stopOnPonderhit is set we are waiting for
+      // 'ponderhit' to stop the search, for instance if max search depth is reached.
+      if (    token == "quit"
+          ||  token == "stop"
+          || (token == "ponderhit" && Threads.stopOnPonderhit))
+          Threads.stop = true;
+
       else if (token == "ponderhit")
-          Threads.main()->ponder = false; // Switch to normal search
+          Threads.ponder = false; // Switch to normal search
 
       else if (token == "uci")
           sync_cout << "id name " << engine_info(true)
@@ -234,6 +238,7 @@ void UCI::loop(int argc, char* argv[]) {
       else if (token == "bench") bench(pos, is, states);
       else if (token == "d")     sync_cout << pos << sync_endl;
       else if (token == "eval")  sync_cout << Eval::trace(pos) << sync_endl;
+      else if (token == "params")sync_cout << MonteCarlo(pos).params() << sync_endl;
       else
           sync_cout << "Unknown command: " << cmd << sync_endl;
 

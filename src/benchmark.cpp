@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -87,6 +87,21 @@ const vector<string> Defaults = {
   "setoption name UCI_Chess960 value false"
 };
 
+
+const vector<string> MonteCarlo = {
+  "setoption name UCI_Chess960 value false",
+
+  // For testing the MonteCarlo algorithm
+
+  // Some tactical blunders
+  "4rrk1/1p1nq3/p7/2p1P1pp/3P2bp/3Q1Bn1/PPPB4/1K2R1NR w - - 40 21", // not e6??, but rather Rh2!
+  "r2qk2r/1p1b1pb1/4p2p/1p1p4/1n1P4/NQ3PP1/PP2N2P/R1B2RK1 b kq - 23 12",  // not ...Rxa3??
+
+  // Two mate combinaisons
+  "6k1/3b3r/1p1p4/p1n2p2/1PPNpP1q/P3Q1p1/1R1RB1P1/5K2 b - - 0 1",
+  "r2r1n2/pp2bk2/2p1p2p/3q4/3PN1QP/2P3R1/P4PP1/5RK1 w - - 0 1",
+};
+
 } // namespace
 
 /// setup_bench() builds a list of UCI commands to be run by bench. There
@@ -121,6 +136,9 @@ vector<string> setup_bench(const Position& current, istream& is) {
   else if (fenFile == "current")
       fens.push_back(current.fen());
 
+  else if (fenFile == "montecarlo")
+      fens = MonteCarlo;
+
   else
   {
       string fen;
@@ -139,9 +157,9 @@ vector<string> setup_bench(const Position& current, istream& is) {
       file.close();
   }
 
+  list.emplace_back("ucinewgame");
   list.emplace_back("setoption name Threads value " + threads);
   list.emplace_back("setoption name Hash value " + ttSize);
-  list.emplace_back("ucinewgame");
 
   for (const string& fen : fens)
       if (fen.find("setoption") != string::npos)

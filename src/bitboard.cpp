@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,16 +19,24 @@
 */
 
 #include <algorithm>
-#include <bitset>
 
 #include "bitboard.h"
 #include "misc.h"
 
 uint8_t PopCnt16[1 << 16];
-uint8_t SquareDistance[SQUARE_NB][SQUARE_NB];
+int SquareDistance[SQUARE_NB][SQUARE_NB];
 
 Bitboard SquareBB[SQUARE_NB];
+Bitboard FileBB[FILE_NB];
+Bitboard RankBB[RANK_NB];
+Bitboard AdjacentFilesBB[FILE_NB];
+Bitboard ForwardRanksBB[COLOR_NB][RANK_NB];
+Bitboard BetweenBB[SQUARE_NB][SQUARE_NB];
 Bitboard LineBB[SQUARE_NB][SQUARE_NB];
+Bitboard DistanceRingBB[SQUARE_NB][8];
+Bitboard ForwardFileBB[COLOR_NB][SQUARE_NB];
+Bitboard PassedPawnMask[COLOR_NB][SQUARE_NB];
+Bitboard PawnAttackSpan[COLOR_NB][SQUARE_NB];
 Bitboard PseudoAttacks[PIECE_TYPE_NB][SQUARE_NB];
 Bitboard PawnAttacks[COLOR_NB][SQUARE_NB];
 
@@ -37,11 +45,76 @@ Magic BishopMagics[SQUARE_NB];
 
 namespace {
 
+  // De Bruijn sequences. See chessprogramming.wikispaces.com/BitScan
+  const uint64_t DeBruijn64 = 0x3F79D71B4CB0A89ULL;
+  const uint32_t DeBruijn32 = 0x783A9B23;
+
+  int MSBTable[256];            // To implement software msb()
+  Square BSFTable[SQUARE_NB];   // To implement software bitscan
   Bitboard RookTable[0x19000];  // To store rook attacks
   Bitboard BishopTable[0x1480]; // To store bishop attacks
 
-  void init_magics(Bitboard table[], Magic magics[], Direction directions[]);
+  void init_magics(Bitboard table[], Magic magics[], Square deltas[]);
+
+  // bsf_index() returns the index into BSFTable[] to look up the bitscan. Uses
+  // Matt Taylor's folding for 32 bit case, extended to 64 bit by Kim Walisch.
+
+  unsigned bsf_index(Bitboard b) {
+    b ^= b - 1;
+    return Is64Bit ? (b * DeBruijn64) >> 58
+                   : ((unsigned(b) ^ unsigned(b >> 32)) * DeBruijn32) >> 26;
+  }
+
+
+  // popcount16() counts the non-zero bits using SWAR-Popcount algorithm
+
+  unsigned popcount16(unsigned u) {
+    u -= (u >> 1) & 0x5555U;
+    u = ((u >> 2) & 0x3333U) + (u & 0x3333U);
+    u = ((u >> 4) + u) & 0x0F0FU;
+    return (u * 0x0101U) >> 8;
+  }
 }
+
+#ifdef NO_BSF
+
+/// Software fall-back of lsb() and msb() for CPU lacking hardware support
+
+Square lsb(Bitboard b) {
+  assert(b);
+  return BSFTable[bsf_index(b)];
+}
+
+Square msb(Bitboard b) {
+
+  assert(b);
+  unsigned b32;
+  int result = 0;
+
+  if (b > 0xFFFFFFFF)
+  {
+      b >>= 32;
+      result = 32;
+  }
+
+  b32 = unsigned(b);
+
+  if (b32 > 0xFFFF)
+  {
+      b32 >>= 16;
+      result += 16;
+  }
+
+  if (b32 > 0xFF)
+  {
+      b32 >>= 8;
+      result += 8;
+  }
+
+  return Square(result + MSBTable[b32]);
+}
+
+#endif // ifdef NO_BSF
 
 
 /// Bitboards::pretty() returns an ASCII representation of a bitboard suitable
@@ -69,23 +142,53 @@ const std::string Bitboards::pretty(Bitboard b) {
 void Bitboards::init() {
 
   for (unsigned i = 0; i < (1 << 16); ++i)
-      PopCnt16[i] = std::bitset<16>(i).count();
+      PopCnt16[i] = (uint8_t) popcount16(i);
 
   for (Square s = SQ_A1; s <= SQ_H8; ++s)
-      SquareBB[s] = (1ULL << s);
+  {
+      SquareBB[s] = 1ULL << s;
+      BSFTable[bsf_index(SquareBB[s])] = s;
+  }
+
+  for (Bitboard b = 2; b < 256; ++b)
+      MSBTable[b] = MSBTable[b - 1] + !more_than_one(b);
+
+  for (File f = FILE_A; f <= FILE_H; ++f)
+      FileBB[f] = f > FILE_A ? FileBB[f - 1] << 1 : FileABB;
+
+  for (Rank r = RANK_1; r <= RANK_8; ++r)
+      RankBB[r] = r > RANK_1 ? RankBB[r - 1] << 8 : Rank1BB;
+
+  for (File f = FILE_A; f <= FILE_H; ++f)
+      AdjacentFilesBB[f] = (f > FILE_A ? FileBB[f - 1] : 0) | (f < FILE_H ? FileBB[f + 1] : 0);
+
+  for (Rank r = RANK_1; r < RANK_8; ++r)
+      ForwardRanksBB[WHITE][r] = ~(ForwardRanksBB[BLACK][r + 1] = ForwardRanksBB[BLACK][r] | RankBB[r]);
+
+  for (Color c = WHITE; c <= BLACK; ++c)
+      for (Square s = SQ_A1; s <= SQ_H8; ++s)
+      {
+          ForwardFileBB [c][s] = ForwardRanksBB[c][rank_of(s)] & FileBB[file_of(s)];
+          PawnAttackSpan[c][s] = ForwardRanksBB[c][rank_of(s)] & AdjacentFilesBB[file_of(s)];
+          PassedPawnMask[c][s] = ForwardFileBB [c][s] | PawnAttackSpan[c][s];
+      }
 
   for (Square s1 = SQ_A1; s1 <= SQ_H8; ++s1)
       for (Square s2 = SQ_A1; s2 <= SQ_H8; ++s2)
+          if (s1 != s2)
+          {
               SquareDistance[s1][s2] = std::max(distance<File>(s1, s2), distance<Rank>(s1, s2));
+              DistanceRingBB[s1][SquareDistance[s1][s2] - 1] |= s2;
+          }
 
   int steps[][5] = { {}, { 7, 9 }, { 6, 10, 15, 17 }, {}, {}, {}, { 1, 7, 8, 9 } };
 
-  for (Color c : { WHITE, BLACK })
+  for (Color c = WHITE; c <= BLACK; ++c)
       for (PieceType pt : { PAWN, KNIGHT, KING })
           for (Square s = SQ_A1; s <= SQ_H8; ++s)
               for (int i = 0; steps[pt][i]; ++i)
               {
-                  Square to = s + Direction(c == WHITE ? steps[pt][i] : -steps[pt][i]);
+                  Square to = s + Square(c == WHITE ? steps[pt][i] : -steps[pt][i]);
 
                   if (is_ok(to) && distance(s, to) < 3)
                   {
@@ -96,11 +199,11 @@ void Bitboards::init() {
                   }
               }
 
-  Direction RookDirections[] = { NORTH, EAST, SOUTH, WEST };
-  Direction BishopDirections[] = { NORTH_EAST, SOUTH_EAST, SOUTH_WEST, NORTH_WEST };
+  Square RookDeltas[] = { NORTH,  EAST,  SOUTH,  WEST };
+  Square BishopDeltas[] = { NORTH_EAST, SOUTH_EAST, SOUTH_WEST, NORTH_WEST };
 
-  init_magics(RookTable, RookMagics, RookDirections);
-  init_magics(BishopTable, BishopMagics, BishopDirections);
+  init_magics(RookTable, RookMagics, RookDeltas);
+  init_magics(BishopTable, BishopMagics, BishopDeltas);
 
   for (Square s1 = SQ_A1; s1 <= SQ_H8; ++s1)
   {
@@ -109,22 +212,27 @@ void Bitboards::init() {
 
       for (PieceType pt : { BISHOP, ROOK })
           for (Square s2 = SQ_A1; s2 <= SQ_H8; ++s2)
-              if (PseudoAttacks[pt][s1] & s2)
-                  LineBB[s1][s2] = (attacks_bb(pt, s1, 0) & attacks_bb(pt, s2, 0)) | s1 | s2;
+          {
+              if (!(PseudoAttacks[pt][s1] & s2))
+                  continue;
+
+              LineBB[s1][s2] = (attacks_bb(pt, s1, 0) & attacks_bb(pt, s2, 0)) | s1 | s2;
+              BetweenBB[s1][s2] = attacks_bb(pt, s1, SquareBB[s2]) & attacks_bb(pt, s2, SquareBB[s1]);
+          }
   }
 }
 
 
 namespace {
 
-  Bitboard sliding_attack(Direction directions[], Square sq, Bitboard occupied) {
+  Bitboard sliding_attack(Square deltas[], Square sq, Bitboard occupied) {
 
     Bitboard attack = 0;
 
     for (int i = 0; i < 4; ++i)
-        for (Square s = sq + directions[i];
-             is_ok(s) && distance(s, s - directions[i]) == 1;
-             s += directions[i])
+        for (Square s = sq + deltas[i];
+             is_ok(s) && distance(s, s - deltas[i]) == 1;
+             s += deltas[i])
         {
             attack |= s;
 
@@ -138,10 +246,10 @@ namespace {
 
   // init_magics() computes all rook and bishop attacks at startup. Magic
   // bitboards are used to look up attacks of sliding pieces. As a reference see
-  // www.chessprogramming.org/Magic_Bitboards. In particular, here we use the so
-  // called "fancy" approach.
+  // chessprogramming.wikispaces.com/Magic+Bitboards. In particular, here we
+  // use the so called "fancy" approach.
 
-  void init_magics(Bitboard table[], Magic magics[], Direction directions[]) {
+  void init_magics(Bitboard table[], Magic magics[], Square deltas[]) {
 
     // Optimal PRNG seeds to pick the correct magics in the shortest time
     int seeds[][RANK_NB] = { { 8977, 44560, 54343, 38998,  5731, 95205, 104912, 17020 },
@@ -161,7 +269,7 @@ namespace {
         // the number of 1s of the mask. Hence we deduce the size of the shift to
         // apply to the 64 or 32 bits word to get the index.
         Magic& m = magics[s];
-        m.mask  = sliding_attack(directions, s, 0) & ~edges;
+        m.mask  = sliding_attack(deltas, s, 0) & ~edges;
         m.shift = (Is64Bit ? 64 : 32) - popcount(m.mask);
 
         // Set the offset for the attacks table of the square. We have individual
@@ -173,7 +281,7 @@ namespace {
         b = size = 0;
         do {
             occupancy[size] = b;
-            reference[size] = sliding_attack(directions, s, b);
+            reference[size] = sliding_attack(deltas, s, b);
 
             if (HasPext)
                 m.attacks[pext(b, m.mask)] = reference[size];

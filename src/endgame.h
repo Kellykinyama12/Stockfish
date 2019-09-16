@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,7 +21,7 @@
 #ifndef ENDGAME_H_INCLUDED
 #define ENDGAME_H_INCLUDED
 
-#include <unordered_map>
+#include <map>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -37,7 +37,6 @@ enum EndgameCode {
 
   EVALUATION_FUNCTIONS,
   KNNK,  // KNN vs K
-  KNNKP, // KNN vs KP
   KXK,   // Generic "mate lone king" eval
   KBNK,  // KBN vs K
   KPK,   // KP vs K
@@ -65,7 +64,6 @@ enum EndgameCode {
 
 /// Endgame functions can be of two types depending on whether they return a
 /// Value or a ScaleFactor.
-
 template<EndgameCode E> using
 eg_type = typename std::conditional<(E < SCALING_FUNCTIONS), Value, ScaleFactor>::type;
 
@@ -91,37 +89,37 @@ struct Endgame : public EndgameBase<T> {
 };
 
 
-/// The Endgames namespace handles the pointers to endgame evaluation and scaling
+/// The Endgames class stores the pointers to endgame evaluation and scaling
 /// base objects in two std::map. We use polymorphism to invoke the actual
 /// endgame function by calling its virtual operator().
 
-namespace Endgames {
+class Endgames {
 
   template<typename T> using Ptr = std::unique_ptr<EndgameBase<T>>;
-  template<typename T> using Map = std::unordered_map<Key, Ptr<T>>;
-
-  extern std::pair<Map<Value>, Map<ScaleFactor>> maps;
-
-  void init();
+  template<typename T> using Map = std::map<Key, Ptr<T>>;
 
   template<typename T>
   Map<T>& map() {
     return std::get<std::is_same<T, ScaleFactor>::value>(maps);
   }
 
-  template<EndgameCode E, typename T = eg_type<E>>
+  template<EndgameCode E, typename T = eg_type<E>, typename P = Ptr<T>>
   void add(const std::string& code) {
 
     StateInfo st;
-    map<T>()[Position().set(code, WHITE, &st).material_key()] = Ptr<T>(new Endgame<E>(WHITE));
-    map<T>()[Position().set(code, BLACK, &st).material_key()] = Ptr<T>(new Endgame<E>(BLACK));
+    map<T>()[Position().set(code, WHITE, &st).material_key()] = P(new Endgame<E>(WHITE));
+    map<T>()[Position().set(code, BLACK, &st).material_key()] = P(new Endgame<E>(BLACK));
   }
 
+  std::pair<Map<Value>, Map<ScaleFactor>> maps;
+
+public:
+  Endgames();
+
   template<typename T>
-  const EndgameBase<T>* probe(Key key) {
-    auto it = map<T>().find(key);
-    return it != map<T>().end() ? it->second.get() : nullptr;
+  EndgameBase<T>* probe(Key key) {
+    return map<T>().count(key) ? map<T>()[key].get() : nullptr;
   }
-}
+};
 
 #endif // #ifndef ENDGAME_H_INCLUDED

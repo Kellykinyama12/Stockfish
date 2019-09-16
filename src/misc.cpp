@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -23,11 +23,6 @@
 #undef  _WIN32_WINNT
 #define _WIN32_WINNT 0x0601 // Force to include needed API prototypes
 #endif
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
 #include <windows.h>
 // The needed Windows API for processor groups could be missed from old Windows
 // versions, so instead of calling them directly (forcing the linker to resolve
@@ -145,7 +140,7 @@ const string engine_info(bool to_uci) {
 
 
 /// Debug functions used mainly to collect run-time statistics
-static std::atomic<int64_t> hits[2], means[2];
+static int64_t hits[2], means[2];
 
 void dbg_hit_on(bool b) { ++hits[0]; if (b) ++hits[1]; }
 void dbg_hit_on(bool c, bool b) { if (c) dbg_hit_on(b); }
@@ -210,6 +205,12 @@ void prefetch(void* addr) {
 
 #endif
 
+void prefetch2(void* addr) {
+
+  prefetch(addr);
+  prefetch((uint8_t*)addr + 64);
+}
+
 namespace WinProcGroup {
 
 #ifndef _WIN32
@@ -218,11 +219,11 @@ void bindThisThread(size_t) {}
 
 #else
 
-/// best_group() retrieves logical processor information using Windows specific
+/// get_group() retrieves logical processor information using Windows specific
 /// API and returns the best group id for the thread with index idx. Original
 /// code from Texel by Peter Österlund.
 
-int best_group(size_t idx) {
+int get_group(size_t idx) {
 
   int threads = 0;
   int nodes = 0;
@@ -232,7 +233,7 @@ int best_group(size_t idx) {
 
   // Early exit if the needed API is not available at runtime
   HMODULE k32 = GetModuleHandle("Kernel32.dll");
-  auto fun1 = (fun1_t)(void(*)())GetProcAddress(k32, "GetLogicalProcessorInformationEx");
+  auto fun1 = (fun1_t)GetProcAddress(k32, "GetLogicalProcessorInformationEx");
   if (!fun1)
       return -1;
 
@@ -251,7 +252,7 @@ int best_group(size_t idx) {
       return -1;
   }
 
-  while (byteOffset < returnLength)
+  while (ptr->Size > 0 && byteOffset + ptr->Size <= returnLength)
   {
       if (ptr->Relationship == RelationNumaNode)
           nodes++;
@@ -262,7 +263,6 @@ int best_group(size_t idx) {
           threads += (ptr->Processor.Flags == LTP_PC_SMT) ? 2 : 1;
       }
 
-      assert(ptr->Size);
       byteOffset += ptr->Size;
       ptr = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)(((char*)ptr) + ptr->Size);
   }
@@ -293,16 +293,24 @@ int best_group(size_t idx) {
 
 void bindThisThread(size_t idx) {
 
+  // If OS already scheduled us on a different group than 0 then don't overwrite
+  // the choice, eventually we are one of many one-threaded processes running on
+  // some Windows NUMA hardware, for instance in fishtest. To make it simple,
+  // just check if running threads are below a threshold, in this case all this
+  // NUMA machinery is not needed.
+  if (Threads.size() < 8)
+      return;
+
   // Use only local variables to be thread-safe
-  int group = best_group(idx);
+  int group = get_group(idx);
 
   if (group == -1)
       return;
 
   // Early exit if the needed API are not available at runtime
   HMODULE k32 = GetModuleHandle("Kernel32.dll");
-  auto fun2 = (fun2_t)(void(*)())GetProcAddress(k32, "GetNumaNodeProcessorMaskEx");
-  auto fun3 = (fun3_t)(void(*)())GetProcAddress(k32, "SetThreadGroupAffinity");
+  auto fun2 = (fun2_t)GetProcAddress(k32, "GetNumaNodeProcessorMaskEx");
+  auto fun3 = (fun3_t)GetProcAddress(k32, "SetThreadGroupAffinity");
 
   if (!fun2 || !fun3)
       return;

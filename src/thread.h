@@ -2,7 +2,7 @@
   Stockfish, a UCI chess playing engine derived from Glaurung 2.1
   Copyright (C) 2004-2008 Tord Romstad (Glaurung author)
   Copyright (C) 2008-2015 Marco Costalba, Joona Kiiski, Tord Romstad
-  Copyright (C) 2015-2019 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
+  Copyright (C) 2015-2017 Marco Costalba, Joona Kiiski, Gary Linscott, Tord Romstad
 
   Stockfish is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@
 #include "pawns.h"
 #include "position.h"
 #include "search.h"
-#include "thread_win32_osx.h"
+#include "thread_win32.h"
 
 
 /// Thread class keeps together all the thread-related stuff. We use
@@ -46,7 +46,7 @@ class Thread {
   ConditionVariable cv;
   size_t idx;
   bool exit = false, searching = true; // Set before starting std::thread
-  NativeThread stdThread;
+  std::thread stdThread;
 
 public:
   explicit Thread(size_t);
@@ -56,14 +56,13 @@ public:
   void idle_loop();
   void start_searching();
   void wait_for_search_finished();
-  int best_move_count(Move move);
 
   Pawns::Table pawnsTable;
   Material::Table materialTable;
-  size_t pvIdx, pvLast, shuffleExts;
-  int selDepth, nmpMinPly;
-  Color nmpColor;
-  std::atomic<uint64_t> nodes, tbHits, bestMoveChanges;
+  Endgames endgames;
+  size_t PVIdx;
+  int selDepth;
+  std::atomic<uint64_t> nodes, tbHits;
 
   Position rootPos;
   Search::RootMoves rootMoves;
@@ -71,8 +70,7 @@ public:
   CounterMoveHistory counterMoves;
   ButterflyHistory mainHistory;
   CapturePieceToHistory captureHistory;
-  ContinuationHistory continuationHistory;
-  Score contempt;
+  ContinuationHistory contHistory;
 };
 
 
@@ -85,11 +83,10 @@ struct MainThread : public Thread {
   void search() override;
   void check_time();
 
-  double previousTimeReduction;
+  bool failedLow;
+  double bestMoveChanges, previousTimeReduction;
   Value previousScore;
   int callsCnt;
-  bool stopOnPonderhit;
-  std::atomic_bool ponder;
 };
 
 
@@ -99,15 +96,16 @@ struct MainThread : public Thread {
 
 struct ThreadPool : public std::vector<Thread*> {
 
+  void init(size_t); // No constructor and destructor, threads rely on globals that should
+  void exit();       // be initialized and valid during the whole thread lifetime.
   void start_thinking(Position&, StateListPtr&, const Search::LimitsType&, bool = false);
-  void clear();
   void set(size_t);
 
   MainThread* main()        const { return static_cast<MainThread*>(front()); }
   uint64_t nodes_searched() const { return accumulate(&Thread::nodes); }
   uint64_t tb_hits()        const { return accumulate(&Thread::tbHits); }
 
-  std::atomic_bool stop;
+  std::atomic_bool stop, ponder, stopOnPonderhit;
 
 private:
   StateListPtr setupStates;
@@ -122,5 +120,22 @@ private:
 };
 
 extern ThreadPool Threads;
+
+
+/// Spinlock class is a yielding spin-lock (compatible with hyperthreading machines)
+
+class Spinlock {
+  std::atomic_int lock;
+
+public:
+  Spinlock() { lock = 1; }                  // Init here to workaround a bug with MSVC 2013
+  Spinlock(const Spinlock&) { lock = 1; };
+  void acquire() {
+      while (lock.fetch_sub(1, std::memory_order_acquire) != 1)
+          while(lock.load(std::memory_order_relaxed) <= 0)
+              std::this_thread::yield();  // Be nice to hyperthreading
+  }
+  void release() { lock.store(1, std::memory_order_release); }
+};
 
 #endif // #ifndef THREAD_H_INCLUDED
