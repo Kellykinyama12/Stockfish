@@ -218,7 +218,7 @@ Node MonteCarlo::tree_policy() {
         TTEntry* tte = TT.probe(current_node()->key1, ttHit);
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
-		Move ttMove =  ttHit && deep > 4*ONE_PLY ? tte->move(): MOVE_NONE;
+		Move ttMove = MOVE_NONE;
 				
 		if(ttHit && deep > 4*ONE_PLY && ttValue != VALUE_NONE && deep >= depth)
 		{
@@ -233,7 +233,7 @@ Node MonteCarlo::tree_policy() {
 					current_node()->alpha = ttValue;
 					current_node()->beta = ttValue;
 					current_node()->depth = deep;
-					current_node()->ttMove = ttMove;
+				//	current_node()->ttMove = ttMove;
 					current_node()->lock.release();
 				}
 			}
@@ -242,7 +242,7 @@ Node MonteCarlo::tree_policy() {
 		if(depth < (current_node()->node_visits+ply) * ONE_PLY)
 			ttMove = MOVE_NONE;
 
-        edges[ply] = best_child(current_node(), STAT_UCB,ttMove);
+        edges[ply] = best_child(current_node(), STAT_UCB, MOVE_NONE);
         Move m = edges[ply]->move;
 
         Edge* edge = edges[ply];
@@ -729,7 +729,7 @@ void MonteCarlo::generate_moves() {
 			if(ttMove)
 				s->ttMove = ttMove;
 		}
-
+		
         MovePicker mp(pos, ttMove, depth, mh, cph, contHist, countermove, killers);
 
         Move move;
@@ -827,7 +827,7 @@ Value MonteCarlo::calculate_prior(Move move, int n, bool Hit, Value alpha, Value
 	Value value;
     value = -evaluate_with_minimax(depth * ONE_PLY);
 	SearchedDepth = (ply +depth) *ONE_PLY;
-	while(value > alpha && value <= beta+Value(18) && depth * ONE_PLY <= deep)
+	while(value-5 > alpha && value+5 <= beta && depth * ONE_PLY <= deep)
 	{
 		depth++;
 		SearchedDepth = (ply +depth) *ONE_PLY;
