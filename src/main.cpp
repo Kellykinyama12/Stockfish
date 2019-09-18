@@ -37,6 +37,16 @@ int main(int argc, char* argv[]) {
   std::cout << engine_info() << std::endl;
 
   UCI::init(Options);
+  
+   //from Kelly begin
+  loadLearningFileIntoLearningTables(true);
+  loadSlaveLearningFilesIntoLearningTables();
+  writeLearningFile(HashTableType::experience);
+  experienceHT.clear();
+  globalLearningHT.clear();
+  loadLearningFileIntoLearningTables(false);
+  //from Kelly end
+  
   PSQT::init();
   Bitboards::init();
   Position::init();

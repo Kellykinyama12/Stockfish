@@ -29,7 +29,9 @@
 #include "bitboard.h"
 #include "types.h"
 
-
+//kelly patch begin
+extern void setStartPoint();
+//kelly patch end
 /// StateInfo struct stores information needed to restore a Position object to
 /// its previous state when we retract a move. Whenever a move is made on the
 /// board (by calling Position::do_move), a StateInfo object must be passed.

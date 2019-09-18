@@ -218,11 +218,11 @@ Node MonteCarlo::tree_policy() {
         TTEntry* tte = TT.probe(current_node()->key1, ttHit);
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
-		Move ttMove = MOVE_NONE;
+		Move ttMove = ttHit && deep > 4*ONE_PLY ? tte->move() : MOVE_NONE;
 				
 		if(ttHit && deep > 4*ONE_PLY && ttValue != VALUE_NONE && deep >= depth)
 		{
-			if(tte->bound() &  BOUND_EXACT)
+			if(tte->bound() &  BOUND_LOWER)
 			{
 				alpha = ttValue;
 				beta = ttValue;
@@ -233,16 +233,16 @@ Node MonteCarlo::tree_policy() {
 					current_node()->alpha = ttValue;
 					current_node()->beta = ttValue;
 					current_node()->depth = deep;
-				//	current_node()->ttMove = ttMove;
+					current_node()->ttMove = ttMove;
 					current_node()->lock.release();
 				}
 			}
 			
 		}
-		if(depth < (current_node()->node_visits+ply) * ONE_PLY)
+		if((depth-ply*ONE_PLY) < (current_node()->node_visits ) * ONE_PLY)
 			ttMove = MOVE_NONE;
 
-        edges[ply] = best_child(current_node(), STAT_UCB, MOVE_NONE);
+        edges[ply] = best_child(current_node(), STAT_UCB, ttMove);
         Move m = edges[ply]->move;
 
         Edge* edge = edges[ply];
@@ -343,9 +343,6 @@ Reward MonteCarlo::playout_policy(Node node) {
     debug_tree_stats();
  //   assert(current_node()->number_of_sons > 0);
 	
-	if(current_node()->AB)
-		return value_to_reward(current_node()->alpha);
-
     // Step 3. Return reward
 
     // Return the reward of the play-out from the point of view of the side to play.
@@ -718,7 +715,7 @@ void MonteCarlo::generate_moves() {
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
 		ttMove =  ttHit    ? tte->move() : MOVE_NONE;
 		
-		if(ttHit && ttValue != VALUE_NONE && deep >= (ply +4) *ONE_PLY && !(s->AB && deep < s->depth))
+		if(ttHit && ttValue != VALUE_NONE && deep >= 4 *ONE_PLY)
 		{
 			s->AB = true;
 			s->depth = deep;
@@ -743,8 +740,7 @@ void MonteCarlo::generate_moves() {
                 stack[ply].moveCount = ++moveCount;
 				Depth SD = DEPTH_ZERO;
                 Value value = calculate_prior(move, moveCount, s->AB, s->alpha,s->beta,s->depth, SD);
-				if(value > s->alpha && SD >= s->depth)
-					s->alpha = value;
+				
 				prior = value_to_reward(value);
 
                 add_prior_to_node(current_node(), move, prior, moveCount);
@@ -985,7 +981,7 @@ void MonteCarlo::default_parameters() {
    MAX_DESCENTS             = Search::Limits.depth ? Search::Limits.depth : 100000000000000;
    BACKUP_MINIMAX           = 1.0;
    PRIOR_FAST_EVAL_DEPTH    = 1;
-   PRIOR_SLOW_EVAL_DEPTH    = 1;
+   PRIOR_SLOW_EVAL_DEPTH    = 2;
    UCB_UNEXPANDED_NODE      = 0.5;
    UCB_EXPLORATION_CONSTANT = 0.7;
    UCB_LOSSES_AVOIDANCE     = 1.0;

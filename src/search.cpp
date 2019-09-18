@@ -24,6 +24,7 @@
 #include <cstring>   // For std::memset
 #include <iostream>
 #include <sstream>
+#include <fstream> //kelly
 
 #include "evaluate.h"
 #include "misc.h"
@@ -37,6 +38,11 @@
 #include "tt.h"
 #include "uci.h"
 #include "syzygy/tbprobe.h"
+//kelly begin
+bool useLearning = true;
+bool enabledLearningProbe;
+
+//kelly end
 
 namespace Search {
 
@@ -203,6 +209,7 @@ void MainThread::search() {
   Color us = rootPos.side_to_move();
   Time.init(Limits, us, rootPos.game_ply());
   TT.new_search();
+  enabledLearningProbe = false;
   MCTS.clear();
 
   int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
@@ -224,6 +231,8 @@ void MainThread::search() {
 
       Thread::search(); // Let's start searching!
   }
+  
+  MainThread* mainThread = this;
 
   // When we reach the maximum depth, we can arrive here without a raise of
   // Threads.stop. However, if we are pondering or in an infinite search,
@@ -269,6 +278,24 @@ void MainThread::search() {
   }
 
   previousScore = bestThread->rootMoves[0].score;
+  
+   
+  //kelly begin	
+  if (bestThread->completedDepth > 4 * ONE_PLY)
+  {
+    LearningFileEntry currentLearningEntry;
+    currentLearningEntry.depth = mainThread->completedDepth;
+    currentLearningEntry.hashKey = rootPos.key();
+    currentLearningEntry.move = mainThread->rootMoves[0].pv[0];
+    currentLearningEntry.score = mainThread->rootMoves[0].score;
+    insertIntoOrUpdateLearningTable(currentLearningEntry,globalLearningHT);
+  }
+
+  if (!enabledLearningProbe)
+  {
+      useLearning = false;
+  }
+  //Kelly end
 
   // Send new PV when needed
   if (bestThread != this)
@@ -511,17 +538,18 @@ namespace {
     assert(!(PvNode && cutNode));
     assert(depth / ONE_PLY * ONE_PLY == depth);
 
-    Move pv[MAX_PLY+1], capturesSearched[32], quietsSearched[64];
+    Move pv[MAX_PLY+1], capturesSearched[32], quietsSearched[64],expTTMove=MOVE_NONE;//from Kelly;
     StateInfo st;
     TTEntry* tte;
     Key posKey;
     Move ttMove, move, excludedMove, bestMove;
     Depth extension, newDepth;
-    Value bestValue, value, ttValue, eval;
-    bool ttHit, inCheck, givesCheck, singularExtensionNode, improving;
+    Value bestValue, value, ttValue, eval,expTTValue;
+    bool ttHit, inCheck, givesCheck, singularExtensionNode, improving, expTTHit=false;
     bool captureOrPromotion, doFullDepthSearch, moveCountPruning, skipQuiets, ttCapture, pvExact;
     Piece movedPiece;
     int moveCount, captureCount, quietCount;
+	bool updatedLearning = false;//from Kelly
 
     // Step 1. Initialize node
     Thread* thisThread = pos.this_thread();
@@ -607,6 +635,72 @@ namespace {
         }
         return ttValue;
     }
+	//from Kelly begin
+    expTTHit = false;
+    updatedLearning = false;
+	int siblings = 0;
+	expNode node = nullptr;
+
+    if (!excludedMove && useLearning)
+    {
+      node = getNodeFromHT(posKey,HashTableType::global);
+      if (node!=nullptr)
+      {
+	  MoveInfo moveInfo = node->latestMoveInfo;
+	  if (node->hashKey == posKey)
+	  {
+	    bool haveTTMove = false;
+	    if (ttMove)
+	      haveTTMove = true;
+	    enabledLearningProbe = true;
+	    expTTHit = true;
+		
+	    if (!haveTTMove)
+	    {
+		ttMove = node->latestMoveInfo.move;
+	    }
+		if(depth -ss->ply * ONE_PLY <= 10 * ONE_PLY)
+	      expTTMove = node->latestMoveInfo.move;
+	    if (node->latestMoveInfo.depth >= depth)
+	    {
+	      expTTMove = node->latestMoveInfo.move;
+	      expTTValue = node->latestMoveInfo.score;
+	      updatedLearning = true;
+	    }
+		if (node->latestMoveInfo.depth == DEPTH_ZERO)
+	    {			
+	      updatedLearning = false;
+	    }
+
+	    if ((!PvNode|| mcts) && updatedLearning && moveInfo.depth >= depth)
+	    {
+	      if (expTTValue >= beta)
+            {
+                if (!pos.capture_or_promotion(expTTMove))
+                    update_stats(pos, ss, ttMove, nullptr, 0, stat_bonus(depth));
+                else
+                    update_capture_stats(pos, expTTMove, nullptr, 0, stat_bonus(depth));
+
+                // Extra penalty for a quiet TT move in previous ply when it gets refuted
+                if ((ss-1)->moveCount == 1 && !pos.captured_piece())
+                    update_continuation_histories(ss-1, pos.piece_on(prevSq), prevSq, -stat_bonus(depth + ONE_PLY));
+            }
+            // Penalty for a quiet ttMove that fails low
+            else if (!pos.capture_or_promotion(expTTMove))
+            {
+                int penalty = -stat_bonus(depth);
+                thisThread->mainHistory.update(pos.side_to_move(), expTTMove, penalty);
+                update_continuation_histories(ss, pos.moved_piece(expTTMove), to_sq(expTTMove), penalty);
+            }
+			
+          thisThread->tbHits.fetch_add(1, std::memory_order_relaxed);
+		  return expTTValue;
+	    }
+	  }
+      }
+    }
+    //from Kelly end
+    
 
     // Step 4a. Tablebase probe
     if (!rootNode && TB::Cardinality)
@@ -862,6 +956,8 @@ moves_loop: // When in check search starts from here
                && !moveCountPruning
                &&  pos.see_ge(move))
           extension = ONE_PLY;
+	  else if(expTTHit && move == expTTMove && mcts)
+		  extension = ONE_PLY;
 
       // Calculate new depth for this move
       newDepth = depth - ONE_PLY + extension;
@@ -1694,3 +1790,10 @@ void Tablebases::filter_root_moves(Position& pos, Search::RootMoves& rootMoves) 
                    : TB::Score < VALUE_DRAW ? -VALUE_MATE + MAX_PLY + 1
                                             :  VALUE_DRAW;
 }
+
+//from Kelly begin
+void setStartPoint()
+{
+	useLearning = true;
+}
+//from Kelly end

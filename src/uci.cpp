@@ -37,6 +37,7 @@
 using namespace std;
 
 extern vector<string> setup_bench(const Position&, istream&);
+int maximumPly = 0;
 
 namespace {
 
@@ -67,12 +68,25 @@ namespace {
     else
         return;
 
+	int plies = 0;
     states = StateListPtr(new std::deque<StateInfo>(1)); // Drop old and create a new one
     pos.set(fen, Options["UCI_Chess960"], &states->back(), Threads.main());
 
     // Parse move list (if any)
     while (is >> token && (m = UCI::to_move(pos, token)) != MOVE_NONE)
     {
+		
+		plies++;
+		if (plies > maximumPly)
+		{
+			LearningFileEntry currentLearningEntry;
+			currentLearningEntry.depth = DEPTH_ZERO;
+			currentLearningEntry.hashKey = pos.key();
+			currentLearningEntry.move = m;
+			currentLearningEntry.score = VALUE_NONE;
+			insertIntoOrUpdateLearningTable(currentLearningEntry,globalLearningHT);
+			maximumPly = plies;
+		}
         states->emplace_back();
         pos.do_move(m, states->back());
     }
@@ -166,7 +180,12 @@ namespace {
         }
         else if (token == "setoption")  setoption(is);
         else if (token == "position")   position(pos, is, states);
-        else if (token == "ucinewgame") Search::clear();
+        else if (token == "ucinewgame") 
+	  {
+		  maximumPly = 0;
+		  setStartPoint();
+		  Search::clear();
+	  }
     }
 
     elapsed = now() - elapsed + 1; // Ensure positivity to avoid a 'divide by zero'
@@ -217,7 +236,10 @@ void UCI::loop(int argc, char* argv[]) {
       if (    token == "quit"
           ||  token == "stop"
           || (token == "ponderhit" && Threads.stopOnPonderhit))
-          Threads.stop = true;
+	{
+	  writeLearningFile(HashTableType::global);//from Kelly
+	  Threads.stop = true;
+	}
 
       else if (token == "ponderhit")
           Threads.ponder = false; // Switch to normal search
@@ -230,7 +252,12 @@ void UCI::loop(int argc, char* argv[]) {
       else if (token == "setoption")  setoption(is);
       else if (token == "go")         go(pos, is, states);
       else if (token == "position")   position(pos, is, states);
-      else if (token == "ucinewgame") Search::clear();
+      else if (token == "ucinewgame") 
+	  {
+		  maximumPly = 0;
+		  setStartPoint();
+		  Search::clear();
+	  }
       else if (token == "isready")    sync_cout << "readyok" << sync_endl;
 
       // Additional custom non-UCI commands, mainly for debugging
