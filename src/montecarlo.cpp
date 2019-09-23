@@ -218,7 +218,7 @@ Node MonteCarlo::tree_policy() {
         TTEntry* tte = TT.probe(current_node()->key1, ttHit);
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
-		Move ttMove = (current_node()->ttMove && current_node()->node_visits <= 3)? current_node()->ttMove : MOVE_NONE;
+		Move ttMove = (current_node()->ttMove && current_node()->node_visits <= 2)? current_node()->ttMove : MOVE_NONE;
 		
         edges[ply] = best_child(current_node(), STAT_UCB, ttMove);
         Move m = edges[ply]->move;
@@ -773,7 +773,7 @@ Value MonteCarlo::calculate_prior(Move move, int n, bool Hit, Value alpha, Value
 
     do_move(move);
 	Value value = -evaluate_with_minimax(depth * ONE_PLY);
-	while(Hit && depth <= maximumPly && value >alpha)
+	while(Hit && depth * ONE_PLY <= deep && value >alpha)
 	{
 		depth++;
 		value = -evaluate_with_minimax(depth * ONE_PLY);
@@ -932,7 +932,7 @@ void MonteCarlo::default_parameters() {
    PRIOR_FAST_EVAL_DEPTH    = 1;
    PRIOR_SLOW_EVAL_DEPTH    = 1;
    UCB_UNEXPANDED_NODE      = 0.5;
-   UCB_EXPLORATION_CONSTANT = 0.1;
+   UCB_EXPLORATION_CONSTANT = 0.3;
    UCB_LOSSES_AVOIDANCE     = 1.0;
    UCB_LOG_TERM_FACTOR      = 0.0;
    UCB_USE_FATHER_VISITS    = true;
