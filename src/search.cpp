@@ -41,6 +41,7 @@
 //kelly begin
 bool useLearning = true;
 bool enabledLearningProbe;
+bool network = false;
 
 //kelly end
 
@@ -213,7 +214,7 @@ void MainThread::search() {
   MCTS.clear();
 	auto it = MCTS.begin();
   
- /* while(it != MCTS.end())
+  while(it != MCTS.end())
   {
 	  Node node = &(it->second);
 	if(!node->ttMove)
@@ -221,7 +222,8 @@ void MainThread::search() {
 	else
 		it++;
   }
-*/
+  network = false;
+
   int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
@@ -356,9 +358,14 @@ void Thread::search() {
 
   multiPV = std::min(multiPV, rootMoves.size());
 
+  bool ABnetwork = network;
+  if(!mainThread)
+	network = true;
+
 
   if (USE_MONTE_CARLO
-  && !mainThread)
+  && (mainThread || (!mainThread && ABnetwork))
+  )
       MonteCarlo(rootPos).test();
   else
 
@@ -1676,8 +1683,6 @@ moves_loop: // When in check search starts from here
     if (Threads.ponder)
         return;
 
-    if (USE_MONTE_CARLO)
-        elapsed = elapsed/4;
 
     if (   (Limits.use_time_management() && elapsed > Time.maximum())
         || (Limits.movetime && elapsed >= Limits.movetime)
