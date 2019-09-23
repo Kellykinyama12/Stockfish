@@ -218,7 +218,7 @@ Node MonteCarlo::tree_policy() {
         TTEntry* tte = TT.probe(current_node()->key1, ttHit);
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
-		Move ttMove =  (current_node()->ttMove && current_node()->depth >= (current_node()->node_visits/2) * ONE_PLY)? current_node()->ttMove : MOVE_NONE;
+		Move ttMove =  (current_node()->ttMove && current_node()->depth >= (current_node()->node_visits) * ONE_PLY)? current_node()->ttMove : MOVE_NONE;
 				
 		
         edges[ply] = best_child(current_node(), STAT_UCB, ttMove);
