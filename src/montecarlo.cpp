@@ -776,7 +776,7 @@ Value MonteCarlo::calculate_prior(Move move, int n, bool Hit, Value alpha, Value
 	while(Hit && depth * ONE_PLY <= deep && value >alpha)
 	{
 		depth++;
-		Value value = -evaluate_with_minimax(depth * ONE_PLY);
+		value = -evaluate_with_minimax(depth * ONE_PLY);
 	}
     undo_move();
 
