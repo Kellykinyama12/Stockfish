@@ -210,10 +210,10 @@ void MainThread::search() {
   Time.init(Limits, us, rootPos.game_ply());
   TT.new_search();
   enabledLearningProbe = false;
-//  MCTS.clear();
+  MCTS.clear();
 	auto it = MCTS.begin();
   
-  while(it != MCTS.end())
+ /* while(it != MCTS.end())
   {
 	  Node node = &(it->second);
 	if(!node->ttMove)
@@ -221,7 +221,7 @@ void MainThread::search() {
 	else
 		it++;
   }
-
+*/
   int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
@@ -1235,6 +1235,8 @@ moves_loop: // When in check search starts from here
 			s->lock.acquire();
 			s->ttMove = bestMove;
 			s->depth = depth;
+			s->alpha = bestValue;
+			s->AB = true;
 			s->lock.release();
 			
 		}

@@ -219,7 +219,8 @@ Node MonteCarlo::tree_policy() {
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
 		Move ttMove =  (current_node()->ttMove && current_node()->depth >= (current_node()->node_visits) * ONE_PLY)? current_node()->ttMove : MOVE_NONE;
-				
+		if(!ttMove)
+			ttMove = (ttHit && deep >= 4 * ONE_PLY && deep >= (current_node()->node_visits * ONE_PLY))? tte->move() : MOVE_NONE;
 		
         edges[ply] = best_child(current_node(), STAT_UCB, ttMove);
         Move m = edges[ply]->move;
@@ -303,6 +304,16 @@ Reward MonteCarlo::playout_policy(Node node) {
     // Now implement a play-out policy from the newly expanded node
 
     debug_tree_stats();
+	if(current_node()->AB)
+		return value_to_reward(current_node()->alpha);
+	
+	bool ttHit = false;
+    TTEntry* tte = TT.probe(current_node()->key1, ttHit);
+	Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
+	Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
+	if(ttHit > deep >= 4 * ONE_PLY && ttValue != VALUE_NONE)
+		return value_to_reward(ttValue);
+		
  //   assert(current_node()->number_of_sons > 0);
 	
     // Step 3. Return reward
@@ -923,7 +934,7 @@ void MonteCarlo::default_parameters() {
    MAX_DESCENTS             = Search::Limits.depth ? Search::Limits.depth : 100000000000000;
    BACKUP_MINIMAX           = 1.0;
    PRIOR_FAST_EVAL_DEPTH    = 1;
-   PRIOR_SLOW_EVAL_DEPTH    = 2;
+   PRIOR_SLOW_EVAL_DEPTH    = 1;
    UCB_UNEXPANDED_NODE      = 0.5;
    UCB_EXPLORATION_CONSTANT = 0.7;
    UCB_LOSSES_AVOIDANCE     = 1.0;
