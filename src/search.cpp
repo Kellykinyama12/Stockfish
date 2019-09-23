@@ -210,8 +210,8 @@ void MainThread::search() {
   Time.init(Limits, us, rootPos.game_ply());
   TT.new_search();
   enabledLearningProbe = false;
-  MCTS.clear();
-/*	auto it = MCTS.begin();
+//  MCTS.clear();
+	auto it = MCTS.begin();
   
   while(it != MCTS.end())
   {
@@ -221,7 +221,7 @@ void MainThread::search() {
 	else
 		it++;
   }
-*/
+
   int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
