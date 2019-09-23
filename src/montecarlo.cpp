@@ -88,6 +88,8 @@ Node get_node(const Position& pos) {
 
        it1++;
    }
+   
+   nodeLock.acquire();
 
    // Node was not found, so we have to create a new one
    NodeInfo infos;
@@ -102,6 +104,7 @@ Node get_node(const Position& pos) {
    debug << "inserting into the hash table: key = " << key1 << endl;
 
    auto it = MCTS.insert(make_pair(key1, infos));
+	nodeLock.release();
    return &(it->second);
 }
 
@@ -125,10 +128,7 @@ Move MonteCarlo::search() {
 		ABrollout = false;
 		Reward reward;
        Node node = tree_policy();
-	   if(ABrollout)
-		   reward = value_to_reward(node->alpha);
-	   else       
-		reward = playout_policy(node);
+	   reward = playout_policy(node);
 	   
        backup(node, reward);
 
@@ -218,30 +218,9 @@ Node MonteCarlo::tree_policy() {
         TTEntry* tte = TT.probe(current_node()->key1, ttHit);
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
-		Move ttMove = ttHit && deep > 4*ONE_PLY ? tte->move() : MOVE_NONE;
+		Move ttMove =  (current_node()->ttMove && current_node()->depth >= (current_node()->node_visits/2) * ONE_PLY)? current_node()->ttMove : MOVE_NONE;
 				
-		if(ttHit && deep > 4*ONE_PLY && ttValue != VALUE_NONE && deep >= depth)
-		{
-			if(tte->bound() &  BOUND_LOWER)
-			{
-				alpha = ttValue;
-				beta = ttValue;
-				depth = deep;
-				if(deep >= current_node()->depth)
-				{
-					current_node()->lock.acquire();
-					current_node()->alpha = ttValue;
-					current_node()->beta = ttValue;
-					current_node()->depth = deep;
-					current_node()->ttMove = ttMove;
-					current_node()->lock.release();
-				}
-			}
-			
-		}
-		if((depth-ply*ONE_PLY) < (current_node()->node_visits ) * ONE_PLY)
-			ttMove = MOVE_NONE;
-
+		
         edges[ply] = best_child(current_node(), STAT_UCB, ttMove);
         Move m = edges[ply]->move;
 
@@ -249,14 +228,7 @@ Node MonteCarlo::tree_policy() {
 
         current_node()->lock.acquire();
 		
-		if(depth >= maximumPly * ONE_PLY)
-		{
-			current_node()->alpha = alpha;
-			current_node()->beta = beta;
-			current_node()->depth = depth;
-			current_node()->AB = true;
-		}
-
+		
         current_node()->node_visits++;
 
         // Add a virtual loss to this edge (for load balancing in the parallel MCTS)
@@ -287,20 +259,10 @@ Node MonteCarlo::tree_policy() {
              << UCI::move(stack[ply-1].currentMove, pos.is_chess960())
              << std::endl;
 
-		nodeLock.acquire();
+//		nodeLock.acquire();
         nodes[ply] = get_node(pos); // Set current node
-		if(current_node()->node_visits == 0)
-		if(depth >= maximumPly * ONE_PLY)
-		{
-			current_node()->lock.acquire();
-			current_node()->alpha = alpha;
-			current_node()->beta = beta;
-			current_node()->depth = depth;
-			current_node()->AB = true;
-			current_node()->lock.release();
-			assert(nodes[ply]->AB == true);
-		}
-		nodeLock.release();
+		
+//		nodeLock.release();
     }
 
 //    assert(current_node()->node_visits == 0);
@@ -714,19 +676,7 @@ void MonteCarlo::generate_moves() {
 		Value ttValue = ttHit ? value_from_tt(tte->value(), ply) : VALUE_NONE;
 		Depth deep = ttHit ? tte->depth(): DEPTH_ZERO;
 		ttMove =  ttHit    ? tte->move() : MOVE_NONE;
-		
-		if(ttHit && ttValue != VALUE_NONE && deep >= 4 *ONE_PLY)
-		{
-			s->AB = true;
-			s->depth = deep;
-			if(tte->bound() &  BOUND_LOWER)
-				s->alpha = ttValue;
-			if(tte->bound() &  BOUND_UPPER)
-				s->beta = ttValue;
-			if(ttMove)
-				s->ttMove = ttMove;
-		}
-		
+				
         MovePicker mp(pos, ttMove, depth, mh, cph, contHist, countermove, killers);
 
         Move move;
@@ -820,15 +770,7 @@ Value MonteCarlo::calculate_prior(Move move, int n, bool Hit, Value alpha, Value
                                            : PRIOR_FAST_EVAL_DEPTH;
 
     do_move(move);
-	Value value;
-    value = -evaluate_with_minimax(depth * ONE_PLY);
-	SearchedDepth = (ply +depth) *ONE_PLY;
-	while(value-5 > alpha && value+5 <= beta && depth * ONE_PLY <= deep)
-	{
-		depth++;
-		SearchedDepth = (ply +depth) *ONE_PLY;
-		value = -evaluate_with_minimax(depth * ONE_PLY);
-	}
+	Value value = -evaluate_with_minimax(depth * ONE_PLY);
     undo_move();
 
     return (value);

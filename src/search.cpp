@@ -211,7 +211,17 @@ void MainThread::search() {
   TT.new_search();
   enabledLearningProbe = false;
   MCTS.clear();
-
+/*	auto it = MCTS.begin();
+  
+  while(it != MCTS.end())
+  {
+	  Node node = &(it->second);
+	if(!node->ttMove)
+		it = MCTS.erase(it);
+	else
+		it++;
+  }
+*/
   int contempt = Options["Contempt"] * PawnValueEg / 100; // From centipawns
   DrawValue[ us] = VALUE_DRAW - Value(contempt);
   DrawValue[~us] = VALUE_DRAW + Value(contempt);
@@ -1028,7 +1038,7 @@ moves_loop: // When in check search starts from here
       // re-searched at full depth.
       if (    depth >= 3 * ONE_PLY
           &&  moveCount > 1
-		  &&  !rootNode
+		  && !rootNode
           && (!captureOrPromotion || moveCountPruning))
       {
           Depth r = reduction<PvNode>(improving, depth, moveCount);
@@ -1213,10 +1223,22 @@ moves_loop: // When in check search starts from here
         update_continuation_histories(ss-1, pos.piece_on(prevSq), prevSq, stat_bonus(depth));
 
     if (!excludedMove)
+	{
         tte->save(posKey, value_to_tt(bestValue, ss->ply),
                   bestValue >= beta ? BOUND_LOWER :
                   PvNode && bestMove ? BOUND_EXACT : BOUND_UPPER,
                   depth, bestMove, ss->staticEval, TT.generation());
+			
+		if(PvNode && bestMove && !mcts) 
+		{
+			Node s = get_node(pos);
+			s->lock.acquire();
+			s->ttMove = bestMove;
+			s->depth = depth;
+			s->lock.release();
+			
+		}
+	}
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 
@@ -1652,8 +1674,8 @@ moves_loop: // When in check search starts from here
     if (Threads.ponder)
         return;
 
-//    if (USE_MONTE_CARLO)
-//        elapsed = 3 * elapsed;
+    if (USE_MONTE_CARLO)
+        elapsed = elapsed/4;
 
     if (   (Limits.use_time_management() && elapsed > Time.maximum())
         || (Limits.movetime && elapsed >= Limits.movetime)

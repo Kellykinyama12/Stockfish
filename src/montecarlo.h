@@ -190,6 +190,6 @@ public:
 typedef std::unordered_multimap<Key, NodeInfo> MCTSHashTable;
 
 extern MCTSHashTable MCTS;
-
+Node get_node(const Position& pos);
 
 #endif // #ifndef MONTECARLO_H_INCLUDED
